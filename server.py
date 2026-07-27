@@ -2,6 +2,9 @@ from mcp.server.fastmcp import FastMCP
 import subprocess
 import requests
 import os
+from sentence_transformers import SentenceTransformer
+import chromadb
+from knowledge import KNOWLEDGE_BASE
 
 mcp = FastMCP("devops-diagnostics")
 
@@ -16,6 +19,17 @@ def run_cmd(cmd, timeout=10):
     except Exception as e:
         return f"Command failed: {str(e)}"
 
+# ── RAG setup (runs once when server starts) ──
+embed_model = SentenceTransformer('all-MiniLM-L6-v2')
+chroma_client = chromadb.Client()
+kb_collection = chroma_client.create_collection("devops_knowledge")
+
+kb_embeddings = embed_model.encode(KNOWLEDGE_BASE).tolist()
+kb_collection.add(
+    documents=KNOWLEDGE_BASE,
+    embeddings=kb_embeddings,
+    ids=[f"kb_{i}" for i in range(len(KNOWLEDGE_BASE))]
+)
 # ───────────── JENKINS ─────────────
 
 @mcp.tool()
@@ -42,6 +56,16 @@ def get_jenkins_console_log(job_name: str, build_number: str = "lastBuild") -> s
     except Exception as e:
         return f"Failed to fetch console log: {str(e)}"
 
+@mcp.tool()
+def search_knowledge_base(question: str) -> str:
+    """Search past troubleshooting knowledge for similar issues/errors previously diagnosed"""
+    question_embedding = embed_model.encode([question]).tolist()
+    results = kb_collection.query(
+        query_embeddings=question_embedding,
+        n_results=2
+    )
+    matches = results['documents'][0]
+    return "\n\n".join(matches) if matches else "No relevant history found."
 # ───────────── DOCKER ─────────────
 
 @mcp.tool()
